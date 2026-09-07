@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ISKL Dictation Recorder</title>
+<style>
+  :root {
+    --navy: #002B49;
+    --navy-deep: #001B30;
+    --gold: #F5B800;
+    --border: #E4E9EE;
+    --muted: #64748B;
+    --live: #E5484D;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #F3F5F7;
+    color: #1A202C;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 28px;
+    max-width: 380px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 18px 40px -18px rgba(0,43,73,0.18);
+  }
+  h1 { font-size: 1.05rem; color: var(--navy); margin: 0 0 4px; }
+  p.sub { font-size: 0.85rem; color: var(--muted); margin: 0 0 22px; }
+  .mic-circle {
+    width: 88px; height: 88px;
+    border-radius: 50%;
+    margin: 0 auto 18px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--navy);
+    color: #fff;
+    font-size: 1.8rem;
+    cursor: pointer;
+    border: none;
+    transition: background-color 0.15s ease;
+  }
+  .mic-circle.recording {
+    background: var(--live);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(229,72,77,0.5); }
+    70% { box-shadow: 0 0 0 16px rgba(229,72,77,0); }
+    100% { box-shadow: 0 0 0 0 rgba(229,72,77,0); }
+  }
+  #status { font-weight: 600; font-size: 0.9rem; margin-bottom: 14px; color: var(--navy); }
+  #timer { font-size: 0.78rem; color: var(--muted); margin-bottom: 18px; }
+  textarea {
+    width: 100%; min-height: 90px;
+    border: 1.5px solid var(--border); border-radius: 10px;
+    padding: 10px; font-size: 0.9rem; resize: vertical;
+    display: none;
+  }
+  .btn {
+    border: none; border-radius: 10px; padding: 10px 18px;
+    font-weight: 700; font-size: 0.88rem; cursor: pointer;
+    margin-top: 12px; width: 100%;
+  }
+  .btn-navy { background: var(--navy); color: #fff; }
+  .btn-gold { background: var(--gold); color: var(--navy); display: none; }
+  .hint { font-size: 0.76rem; color: var(--muted); margin-top: 14px; line-height: 1.5; }
+  .error { color: var(--live); font-size: 0.82rem; margin-top: 10px; display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>ISKL dictation</h1>
+    <p class="sub">Tap the mic, speak your notes, then stop to send them back.</p>
+
+    <button class="mic-circle" id="micBtn" aria-label="Start recording">
+      <span id="micGlyph">&#127908;</span>
+    </button>
+
+    <div id="status">Tap to start recording</div>
+    <div id="timer"></div>
+
+    <textarea id="resultBox" readonly></textarea>
+    <button class="btn btn-gold" id="copyBtn">Copy text</button>
+    <button class="btn btn-navy" id="sendBtn" style="display:none;">Send to minutes form</button>
+
+    <div class="error" id="errorMsg"></div>
+    <div class="hint" id="hintMsg">This page needs its own configuration — see setup notes in the file.</div>
+  </div>
+
+<script>
+  /* ============================================================
+     CONFIGURATION — fill these in after you deploy this file
+     ============================================================ */
+  const APPS_SCRIPT_EXEC_URL = 'PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE'; // ends in /exec
+  const SHARED_TOKEN = 'PASTE_THE_SAME_TOKEN_YOU_PUT_IN_SCRIPT_PROPERTIES';
+  /* ============================================================ */
+
+  const micBtn = document.getElementById('micBtn');
+  const statusEl = document.getElementById('status');
+  const timerEl = document.getElementById('timer');
+  const resultBox = document.getElementById('resultBox');
+  const copyBtn = document.getElementById('copyBtn');
+  const sendBtn = document.getElementById('sendBtn');
+  const errorMsg = document.getElementById('errorMsg');
+  const hintMsg = document.getElementById('hintMsg');
+
+  const openedByParent = !!window.opener;
+  hintMsg.textContent = openedByParent
+    ? 'When you stop recording, the text is sent straight back to your minutes form automatically.'
+    : 'Tip: open this page from the "Start Dictation" button in the minutes form so your text goes back automatically.';
+
+  let mediaRecorder = null;
+  let audioStream = null;
+  let recordedChunks = [];
+  let isRecording = false;
+  let startTime = 0;
+  let timerInterval = null;
+
+  function pickSupportedMimeType() {
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+    for (const type of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return '';
+  }
+
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    errorMsg.style.display = 'block';
+  }
+
+  micBtn.addEventListener('click', () => {
+    if (isRecording) stopRecording(); else startRecording();
+  });
+
+  async function startRecording() {
+    errorMsg.style.display = 'none';
+    resultBox.style.display = 'none';
+    copyBtn.style.display = 'none';
+    sendBtn.style.display = 'none';
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      showError('This browser does not support recording. Try Chrome or Safari.');
+      return;
+    }
+
+    try {
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = pickSupportedMimeType();
+      mediaRecorder = mimeType ? new MediaRecorder(audioStream, { mimeType }) : new MediaRecorder(audioStream);
+      recordedChunks = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+      };
+      mediaRecorder.onstop = handleStop;
+
+      mediaRecorder.start();
+      isRecording = true;
+      micBtn.classList.add('recording');
+      micBtn.setAttribute('aria-label', 'Stop recording');
+      statusEl.textContent = 'Listening… tap to stop';
+      startTime = Date.now();
+      timerInterval = setInterval(() => {
+        const secs = Math.floor((Date.now() - startTime) / 1000);
+        timerEl.textContent = `${String(Math.floor(secs / 60)).padStart(2,'0')}:${String(secs % 60).padStart(2,'0')}`;
+      }, 500);
+    } catch (err) {
+      showError('Microphone access was blocked. Check your browser permission for this site and try again.');
+    }
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    if (audioStream) audioStream.getTracks().forEach(t => t.stop());
+    isRecording = false;
+    micBtn.classList.remove('recording');
+    micBtn.setAttribute('aria-label', 'Start recording');
+    clearInterval(timerInterval);
+    statusEl.textContent = 'Transcribing…';
+  }
+
+  async function handleStop() {
+    if (recordedChunks.length === 0) {
+      statusEl.textContent = 'No audio captured — tap to try again';
+      return;
+    }
+    const blobType = mediaRecorder.mimeType || 'audio/webm';
+    const blob = new Blob(recordedChunks, { type: blobType });
+    const extension = blobType.includes('mp4') ? 'm4a' : blobType.includes('ogg') ? 'ogg' : 'webm';
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64Audio = reader.result.split(',')[1];
+      try {
+        if (APPS_SCRIPT_EXEC_URL.indexOf('PASTE_YOUR') === 0) {
+          showError('This recorder page has not been configured yet with your Apps Script URL.');
+          statusEl.textContent = 'Setup needed';
+          return;
+        }
+        const response = await fetch(APPS_SCRIPT_EXEC_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // keeps this a "simple request" — no CORS preflight
+          body: JSON.stringify({
+            action: 'transcribe',
+            token: SHARED_TOKEN,
+            audio: base64Audio,
+            mimeType: blobType,
+            extension: extension
+          })
+        });
+        const data = await response.json();
+        if (data.success) {
+          statusEl.textContent = 'Done';
+          resultBox.value = data.text;
+          resultBox.style.display = 'block';
+          if (openedByParent) {
+            window.opener.postMessage({ type: 'iskl-transcript', text: data.text }, '*');
+            statusEl.textContent = 'Sent back to your form — you can close this tab';
+          } else {
+            copyBtn.style.display = 'block';
+          }
+        } else {
+          showError(data.error || 'Transcription failed.');
+          statusEl.textContent = 'Tap to try again';
+        }
+      } catch (err) {
+        showError('Could not reach the transcription service: ' + err);
+        statusEl.textContent = 'Tap to try again';
+      }
+    };
+    reader.readAsDataURL(blob);
+  }
+
+  copyBtn.addEventListener('click', () => {
+    resultBox.select();
+    document.execCommand('copy');
+    copyBtn.textContent = 'Copied!';
+    setTimeout(() => (copyBtn.textContent = 'Copy text'), 1500);
+  });
+</script>
+</body>
+</html>
