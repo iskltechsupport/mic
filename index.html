@@ -80,7 +80,7 @@
 <body>
   <div class="card">
     <h1>ISKL dictation</h1>
-    <p class="sub">Tap the mic and speak — your words appear below.</p>
+    <p class="sub">Tap the mic and speak — your words appear live in the minutes form, no need to send.</p>
 
     <button class="mic-circle" id="micBtn" aria-label="Start dictation">
       <span id="micGlyph">&#127908;</span>
@@ -90,7 +90,7 @@
 
     <textarea id="resultBox" placeholder="Your dictated notes will appear here. You can also edit them by hand before sending."></textarea>
 
-    <button class="btn btn-navy" id="sendBtn">Send to minutes form</button>
+    <button class="btn btn-navy" id="sendBtn">Send typed text (if you edited manually)</button>
     <button class="btn btn-gold" id="copyBtn">Copy text instead</button>
 
     <div class="error" id="errorMsg"></div>
@@ -112,9 +112,10 @@
 
   const openedByParent = !!window.opener;
   copyBtn.style.display = openedByParent ? 'none' : 'block';
+  sendBtn.style.display = openedByParent ? 'block' : 'none';
   hintMsg.textContent = openedByParent
-    ? 'Tap "Send to minutes form" whenever you\u2019re happy with the text \u2014 you can dictate more, edit it by hand, then send once.'
-    : 'Tip: open this page from the "Start Dictation" button in the minutes form so your text can be sent back automatically. Since it wasn\u2019t opened that way, use "Copy text instead."';
+    ? 'Spoken words are sent to your minutes form automatically as you talk. If you type or edit text here by hand, tap "Send typed text" to add it too.'
+    : 'Tip: open this page from the "Start Dictation" button in the minutes form so your text is sent back automatically. Since it wasn\u2019t opened that way, use "Copy text instead."';
 
   if (!supported) {
     micBtn.disabled = true;
@@ -128,6 +129,7 @@
   let userStopped = false;
   let baseText = '';
   let interimText = '';
+  let sentUpToLength = 0;
 
   function updateBox() {
     resultBox.value = baseText + interimText;
@@ -170,9 +172,14 @@
         if (event.results[i].isFinal) finalChunk += transcript + ' ';
         else interimChunk += transcript;
       }
-      if (finalChunk) baseText += finalChunk;
+      if (finalChunk) {
+        baseText += finalChunk;
+        sentUpToLength = baseText.length;
+        if (openedByParent) window.opener.postMessage({ type: 'iskl-transcript-final', text: finalChunk }, '*');
+      }
       interimText = interimChunk;
       updateBox();
+      if (openedByParent) window.opener.postMessage({ type: 'iskl-transcript-interim', text: interimText }, '*');
     };
 
     recognition.onerror = (event) => {
@@ -199,21 +206,18 @@
   }
 
   sendBtn.addEventListener('click', () => {
-    const text = resultBox.value.trim();
-    if (!text) {
-      errorMsg.textContent = 'Nothing to send yet \u2014 dictate or type something first.';
+    const fullText = resultBox.value;
+    const unsent = fullText.slice(sentUpToLength).trim();
+    if (!unsent) {
+      errorMsg.textContent = 'Nothing new to send \u2014 spoken text is already sent automatically as you talk.';
       errorMsg.style.display = 'block';
       return;
     }
     if (openedByParent) {
-      window.opener.postMessage({ type: 'iskl-transcript', text: text }, '*');
-      statusEl.textContent = 'Sent \u2014 you can close this tab';
-      sendBtn.disabled = true;
-    } else {
-      resultBox.select();
-      document.execCommand('copy');
-      copyBtn.textContent = 'Copied!';
-      setTimeout(() => (copyBtn.textContent = 'Copy text instead'), 1500);
+      window.opener.postMessage({ type: 'iskl-transcript-final', text: unsent + ' ' }, '*');
+      sentUpToLength = fullText.length;
+      statusEl.textContent = 'Sent';
+      errorMsg.style.display = 'none';
     }
   });
 
